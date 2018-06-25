@@ -77,5 +77,5 @@ TRACE_EVENT(
 
 /* This part must be outside protection */
 #undef TRACE_INCLUDE_PATH
-#define TRACE_INCLUDE_PATH .
+#define TRACE_INCLUDE_PATH /home/vicky/moto-g5-kernel/android_kernel_motorola_msm8937/drivers/net/ethernet/msm/
 #include <trace/define_trace.h>
