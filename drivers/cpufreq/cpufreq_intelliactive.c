@@ -84,13 +84,13 @@ static int ntarget_loads = ARRAY_SIZE(default_target_loads);
 /*
  * The minimum amount of time to spend at a frequency before we can ramp down.
  */
-#define DEFAULT_MIN_SAMPLE_TIME (80 * USEC_PER_MSEC)
+#define DEFAULT_MIN_SAMPLE_TIME (50 * USEC_PER_MSEC)
 static unsigned long min_sample_time = DEFAULT_MIN_SAMPLE_TIME;
 
 /*
  * The sample rate of the timer used to increase frequency
  */
-#define DEFAULT_TIMER_RATE (20 * USEC_PER_MSEC)
+#define DEFAULT_TIMER_RATE 30000
 static unsigned long timer_rate = DEFAULT_TIMER_RATE;
 
 /* Busy SDF parameters*/
@@ -121,17 +121,15 @@ static u64 boostpulse_endtime;
 #define DEFAULT_TIMER_SLACK (4 * DEFAULT_TIMER_RATE)
 static int timer_slack_val = DEFAULT_TIMER_SLACK;
 
-static bool io_is_busy = 1;
-
 /*
  * If the max load among other CPUs is higher than up_threshold_any_cpu_load
- * and if the highest frequency among the other CPUs is higher than
+ * or if the highest frequency among the other CPUs is higher than
  * up_threshold_any_cpu_freq then do not let the frequency to drop below
  * sync_freq
  */
-static unsigned int up_threshold_any_cpu_load = 95;
-static unsigned int sync_freq = 729600;
-static unsigned int up_threshold_any_cpu_freq = 960000;
+static unsigned int up_threshold_any_cpu_load = 70;
+static unsigned int sync_freq = 1036800;
+static unsigned int up_threshold_any_cpu_freq = 1497600;
 
 static int two_phase_freq_array[NR_CPUS] = {[0 ... NR_CPUS-1] = 1728000} ;
 
@@ -148,42 +146,6 @@ struct cpufreq_governor cpufreq_gov_intelliactive = {
 	.owner = THIS_MODULE,
 };
 
-static inline cputime64_t get_cpu_idle_time_jiffy(unsigned int cpu,
-						  cputime64_t *wall)
-{
-	u64 idle_time;
-	u64 cur_wall_time;
-	u64 busy_time;
-
-	cur_wall_time = jiffies64_to_cputime64(get_jiffies_64());
-
-	busy_time  = kcpustat_cpu(cpu).cpustat[CPUTIME_USER];
-	busy_time += kcpustat_cpu(cpu).cpustat[CPUTIME_SYSTEM];
-	busy_time += kcpustat_cpu(cpu).cpustat[CPUTIME_IRQ];
-	busy_time += kcpustat_cpu(cpu).cpustat[CPUTIME_SOFTIRQ];
-	busy_time += kcpustat_cpu(cpu).cpustat[CPUTIME_STEAL];
-	busy_time += kcpustat_cpu(cpu).cpustat[CPUTIME_NICE];
-
-	idle_time = cur_wall_time - busy_time;
-	if (wall)
-		*wall = jiffies_to_usecs(cur_wall_time);
-
-	return jiffies_to_usecs(idle_time);
-}
-
-static inline cputime64_t get_cpu_idle_time(unsigned int cpu,
-					    cputime64_t *wall)
-{
-	u64 idle_time = get_cpu_idle_time_us(cpu, wall);
-
-	if (idle_time == -1ULL)
-		idle_time = get_cpu_idle_time_jiffy(cpu, wall);
-	else if (!io_is_busy)
-		idle_time += get_cpu_iowait_time_us(cpu, wall);
-
-	return idle_time;
-}
-
 static void cpufreq_interactive_timer_resched(
 	struct cpufreq_interactive_cpuinfo *pcpu)
 {
@@ -193,7 +155,7 @@ static void cpufreq_interactive_timer_resched(
 	spin_lock_irqsave(&pcpu->load_lock, flags);
 	pcpu->time_in_idle =
 		get_cpu_idle_time(smp_processor_id(),
-				     &pcpu->time_in_idle_timestamp);
+				     &pcpu->time_in_idle_timestamp, 0);
 	pcpu->cputime_speedadj = 0;
 	pcpu->cputime_speedadj_timestamp = pcpu->time_in_idle_timestamp;
 	expires = jiffies + usecs_to_jiffies(timer_rate);
@@ -230,7 +192,7 @@ static void cpufreq_interactive_timer_start(int cpu)
 
 	spin_lock_irqsave(&pcpu->load_lock, flags);
 	pcpu->time_in_idle =
-		get_cpu_idle_time(cpu, &pcpu->time_in_idle_timestamp);
+		get_cpu_idle_time(cpu, &pcpu->time_in_idle_timestamp, 0);
 	pcpu->cputime_speedadj = 0;
 	pcpu->cputime_speedadj_timestamp = pcpu->time_in_idle_timestamp;
 	spin_unlock_irqrestore(&pcpu->load_lock, flags);
@@ -371,7 +333,7 @@ static u64 update_load(int cpu)
 	unsigned int delta_time;
 	u64 active_time;
 
-	now_idle = get_cpu_idle_time(cpu, &now);
+	now_idle = get_cpu_idle_time(cpu, &now, 0);
 	delta_idle = (unsigned int)(now_idle - pcpu->time_in_idle);
 	delta_time = (unsigned int)(now - pcpu->time_in_idle_timestamp);
 
@@ -474,7 +436,7 @@ static void cpufreq_interactive_timer(unsigned long data)
 				max_freq = max(max_freq, picpu->target_freq);
 			}
 
-			if (max_freq > up_threshold_any_cpu_freq &&
+			if (max_freq > up_threshold_any_cpu_freq ||
 				max_load >= up_threshold_any_cpu_load)
 				new_freq = sync_freq;
 		}
@@ -864,7 +826,7 @@ static ssize_t show_target_loads(
 		ret += sprintf(buf + ret, "%u%s", target_loads[i],
 			       i & 0x1 ? ":" : " ");
 
-	ret += sprintf(buf + --ret, "\n");
+	sprintf(buf + ret - 1, "\n");
 	spin_unlock_irqrestore(&target_loads_lock, flags);
 	return ret;
 }
@@ -907,7 +869,7 @@ static ssize_t show_above_hispeed_delay(
 		ret += sprintf(buf + ret, "%u%s", above_hispeed_delay[i],
 			       i & 0x1 ? ":" : " ");
 
-	ret += sprintf(buf + --ret, "\n");
+	sprintf(buf + ret - 1, "\n");
 	spin_unlock_irqrestore(&above_hispeed_delay_lock, flags);
 	return ret;
 }
@@ -951,7 +913,7 @@ static ssize_t store_hispeed_freq(struct kobject *kobj,
 	int ret;
 	long unsigned int val;
 
-	ret = strict_strtoul(buf, 0, &val);
+	ret = kstrtoul(buf, 0, &val);
 	if (ret < 0)
 		return ret;
 	hispeed_freq = val;
@@ -974,7 +936,7 @@ static ssize_t store_sampling_down_factor(struct kobject *kobj,
 	int ret;
 	long unsigned int val;
 
-	ret = strict_strtoul(buf, 0, &val);
+	ret = kstrtoul(buf, 0, &val);
 	if (ret < 0)
 		return ret;
 	sampling_down_factor = val;
@@ -997,7 +959,7 @@ static ssize_t store_go_hispeed_load(struct kobject *kobj,
 	int ret;
 	unsigned long val;
 
-	ret = strict_strtoul(buf, 0, &val);
+	ret = kstrtoul(buf, 0, &val);
 	if (ret < 0)
 		return ret;
 	go_hispeed_load = val;
@@ -1019,7 +981,7 @@ static ssize_t store_min_sample_time(struct kobject *kobj,
 	int ret;
 	unsigned long val;
 
-	ret = strict_strtoul(buf, 0, &val);
+	ret = kstrtoul(buf, 0, &val);
 	if (ret < 0)
 		return ret;
 	min_sample_time = val;
@@ -1041,7 +1003,7 @@ static ssize_t store_timer_rate(struct kobject *kobj,
 	int ret;
 	unsigned long val;
 
-	ret = strict_strtoul(buf, 0, &val);
+	ret = kstrtoul(buf, 0, &val);
 	if (ret < 0)
 		return ret;
 	timer_rate = val;
@@ -1142,28 +1104,6 @@ static ssize_t store_boostpulse_duration(
 
 define_one_global_rw(boostpulse_duration);
 
-static ssize_t show_io_is_busy(struct kobject *kobj,
-			struct attribute *attr, char *buf)
-{
-	return sprintf(buf, "%u\n", io_is_busy);
-}
-
-static ssize_t store_io_is_busy(struct kobject *kobj,
-			struct attribute *attr, const char *buf, size_t count)
-{
-	int ret;
-	unsigned long val;
-
-	ret = kstrtoul(buf, 0, &val);
-	if (ret < 0)
-		return ret;
-	io_is_busy = val;
-	return count;
-}
-
-static struct global_attr io_is_busy_attr = __ATTR(io_is_busy, 0644,
-		show_io_is_busy, store_io_is_busy);
-
 static ssize_t show_sync_freq(struct kobject *kobj,
 			struct attribute *attr, char *buf)
 {
@@ -1245,7 +1185,6 @@ static struct attribute *interactive_attributes[] = {
 	&boost.attr,
 	&boostpulse.attr,
 	&boostpulse_duration.attr,
-	&io_is_busy_attr.attr,
 	&sampling_down_factor_attr.attr,
 	&sync_freq_attr.attr,
 	&up_threshold_any_cpu_load_attr.attr,
@@ -1265,27 +1204,11 @@ static void interactive_input_event(struct input_handle *handle,
 	}
 }
 
-static int input_dev_filter(const char *input_dev_name)
-{
-	if (strstr(input_dev_name, "touchscreen") ||
-	    strstr(input_dev_name, "touch_dev") ||
-	    strstr(input_dev_name, "sec-touchscreen") ||
-	    strstr(input_dev_name, "keypad")) {
-		return 0;
-	} else {
-		return 1;
-	}
-}
-
-
 static int interactive_input_connect(struct input_handler *handler,
 		struct input_dev *dev, const struct input_device_id *id)
 {
 	struct input_handle *handle;
 	int error;
-
-	if (input_dev_filter(dev->name))
-		return -ENODEV;
 
 	handle = kzalloc(sizeof(struct input_handle), GFP_KERNEL);
 	if (!handle)
@@ -1319,8 +1242,21 @@ static void interactive_input_disconnect(struct input_handle *handle)
 }
 
 static const struct input_device_id interactive_ids[] = {
-	{ .driver_info = 1 },
-	{ },
+	{
+		.flags = INPUT_DEVICE_ID_MATCH_EVBIT |
+			 INPUT_DEVICE_ID_MATCH_ABSBIT,
+		.evbit = { BIT_MASK(EV_ABS) },
+		.absbit = { [BIT_WORD(ABS_MT_POSITION_X)] =
+			    BIT_MASK(ABS_MT_POSITION_X) |
+			    BIT_MASK(ABS_MT_POSITION_Y) },
+	}, /* multi-touch touchscreen */
+	{
+		.flags = INPUT_DEVICE_ID_MATCH_KEYBIT |
+			 INPUT_DEVICE_ID_MATCH_ABSBIT,
+		.keybit = { [BIT_WORD(BTN_TOUCH)] = BIT_MASK(BTN_TOUCH) },
+		.absbit = { [BIT_WORD(ABS_X)] =
+			    BIT_MASK(ABS_X) | BIT_MASK(ABS_Y) },
+	}, /* touchpad */
 };
 
 static struct input_handler interactive_input_handler = {
@@ -1366,9 +1302,6 @@ static int cpufreq_governor_intelliactive(struct cpufreq_policy *policy,
 
 	switch (event) {
 	case CPUFREQ_GOV_START:
-		if (!cpu_online(policy->cpu))
-			return -EINVAL;
-
 		mutex_lock(&gov_lock);
 
 		freq_table =
@@ -1402,10 +1335,6 @@ static int cpufreq_governor_intelliactive(struct cpufreq_policy *policy,
 			mutex_unlock(&gov_lock);
 			return 0;
 		}
-
-		if (!policy->cpu)
-			rc = input_register_handler
-				(&interactive_input_handler);
 
 		rc = sysfs_create_group(cpufreq_global_kobject,
 				&interactive_attr_group);
@@ -1493,7 +1422,7 @@ static void cpufreq_interactive_nop_timer(unsigned long data)
 
 static int __init cpufreq_intelliactive_init(void)
 {
-	unsigned int i;
+	unsigned int i, rc;
 	struct cpufreq_interactive_cpuinfo *pcpu;
 	struct sched_param param = { .sched_priority = MAX_RT_PRIO-1 };
 
@@ -1507,6 +1436,8 @@ static int __init cpufreq_intelliactive_init(void)
 		pcpu->cpu_slack_timer.function = cpufreq_interactive_nop_timer;
 		spin_lock_init(&pcpu->load_lock);
 		init_rwsem(&pcpu->enable_sem);
+		if (!i)
+			rc = input_register_handler(&interactive_input_handler);
 	}
 
 	spin_lock_init(&target_loads_lock);
@@ -1536,7 +1467,13 @@ module_init(cpufreq_intelliactive_init);
 
 static void __exit cpufreq_interactive_exit(void)
 {
+	unsigned int cpu;
+
 	cpufreq_unregister_governor(&cpufreq_gov_intelliactive);
+	for_each_possible_cpu(cpu) {
+		if(!cpu)
+			input_unregister_handler(&interactive_input_handler);
+	}
 	kthread_stop(speedchange_task);
 	put_task_struct(speedchange_task);
 }
@@ -1548,4 +1485,3 @@ MODULE_AUTHOR("Paul Reioux <reioux@gmail.com>");
 MODULE_DESCRIPTION("'cpufreq_intelliactive' - A cpufreq governor for "
 	"Latency sensitive workloads based on Google's Interactive");
 MODULE_LICENSE("GPL");
-

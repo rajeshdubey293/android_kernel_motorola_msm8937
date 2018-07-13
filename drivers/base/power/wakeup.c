@@ -18,8 +18,8 @@
 #include <trace/events/power.h>
 
 #include "power.h"
+#include "boeffla_wl_blocker.h"
 #ifdef CONFIG_BOEFFLA_WL_BLOCKER
-char list_wl[255];
 char list_wl_search[257];
 bool wl_blocker_active = false;
 bool wl_blocker_debug = false;
@@ -498,6 +498,8 @@ static void wakeup_source_report_event(struct wakeup_source *ws)
 	if (!ws->active)
 		wakeup_source_activate(ws);
 #ifdef CONFIG_BOEFFLA_WL_BLOCKER
+    }
+#endif
 }
 
 /**
